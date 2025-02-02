@@ -9,6 +9,7 @@ from google.auth import exceptions
 import json
 from google.oauth2.service_account import Credentials
 from google.oauth2 import service_account
+import pytz
 
 # Define the required Google Sheets API scope
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -20,8 +21,8 @@ service_account_key = st.secrets.get("gcp_service_account")
 credentials = service_account.Credentials.from_service_account_info(service_account_key, scopes=scope)
 
 # Constants
-ADMIN_EMAIL = "vysakharaghavan@gmail.com"
-REMINDER_THRESHOLD = timedelta(hours=10)  # 10 hours threshold
+ADMIN_EMAIL = "777bizcentre@gmail.com"
+#REMINDER_THRESHOLD = timedelta(hours=10)  # 10 hours threshold
 
 # Use the service account dictionary directly from Streamlit secrets
 #credentials = service_account.Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
@@ -43,14 +44,22 @@ leaves_sheet = sheet.worksheet("leaves")
 # Load CSV files
 def load_data():
     employees = pd.DataFrame(employees_sheet.get_all_records())
-    attendance = pd.DataFrame(attendance_sheet.get_all_records())
-    leaves = pd.DataFrame(leaves_sheet.get_all_records())
+    #attendance = pd.DataFrame(attendance_sheet.get_all_records())
+    #leaves = pd.DataFrame(leaves_sheet.get_all_records())
+
+    # Define expected columns
+    attendance_columns = ["id", "name", "email", "registered_id", "clock_in", "clock_out", "duration", "status"]
+    leaves_columns = ["id", "name", "email", "registered_id", "start_date", "end_date", "reason"]
+
+    # Create DataFrames directly from sheet data
+    attendance = pd.DataFrame(attendance_sheet.get_all_records()) if attendance_sheet.get_all_records() else pd.DataFrame(columns=attendance_columns)
+    leaves = pd.DataFrame(leaves_sheet.get_all_records()) if leaves_sheet.get_all_records() else pd.DataFrame(columns=leaves_columns)
 
     # Convert 'passkey' column to string
     employees["passkey"] = employees["passkey"].astype(str)
     
     return employees, attendance, leaves
-    
+
 # Save Data back to Google Sheets
 def save_data_to_google_sheets(df, sheet_name):
     worksheet = sheet.worksheet(sheet_name)
@@ -70,6 +79,9 @@ def send_email(to_email, subject, body):
 
 # Load data
 employees, attendance, leaves = load_data()
+
+# Check if attendance is loaded correctly
+print("Attendance DataFrame Columns:", attendance.columns)  # Verify columns in the attendance DataFrame
 
 # Function to send reminder emails if needed
 #def send_clock_out_reminder(employee, attendance):
@@ -137,8 +149,18 @@ if name != "Select Your Name" and passkey:
             if st.session_state.clock_in_time is None:
                 # Clock In action
                 if st.button("Clock In"):
-                    clock_in_time = datetime.now().strftime("%H:%M")
-                    status = "Half Day" if datetime.strptime(clock_in_time, "%H:%M") > (datetime.strptime(actual_clock_in, "%H:%M") + timedelta(minutes=10)) else "Full Day"
+                    ist = pytz.timezone("Asia/Kolkata")
+                    clock_in_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")  # Includes date
+
+                    # Convert actual_clock_in to full datetime before adding timedelta
+                    actual_clock_in_dt = datetime.strptime(actual_clock_in, "%H:%M")  # Convert to datetime
+                    actual_clock_in_dt = datetime.combine(datetime.today(), actual_clock_in_dt.time())  # Add today's date
+                    actual_clock_in_dt += timedelta(minutes=10)  # Now safe to add timedelta
+
+                    status = "Half Day" if datetime.strptime(clock_in_time, "%Y-%m-%d %H:%M:%S") > actual_clock_in_dt else "Full Day"
+                    #clock_in_time = datetime.now(ist).strftime("%H:%M")
+                    #clock_in_time = datetime.now().strftime("%H:%M")
+                    #status = "Half Day" if datetime.strptime(clock_in_time, "%H:%M") > (datetime.strptime(actual_clock_in, "%H:%M") + timedelta(minutes=10)) else "Full Day"
                     new_entry = pd.DataFrame({
                         "id": [len(attendance) + 1],
                         "name": [name],
@@ -158,9 +180,14 @@ if name != "Select Your Name" and passkey:
             elif st.session_state.clock_in_time is not None and st.session_state.clock_out_time is None:
                 # Clock Out action
                 if st.button("Clock Out"):
-                    clock_out_time = datetime.now().strftime("%H:%M")
+                    ist = pytz.timezone("Asia/Kolkata")
+                    clock_out_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")  # Includes date
+                    #clock_out_time = datetime.now(ist).strftime("%H:%M")
+                    #clock_out_time = datetime.now().strftime("%H:%M")
                     clock_in_time = st.session_state.clock_in_time
-                    duration = (datetime.strptime(clock_out_time, "%H:%M") - datetime.strptime(clock_in_time, "%H:%M")).seconds / 3600
+                    #duration = (datetime.strptime(clock_out_time, "%H:%M") - datetime.strptime(clock_in_time, "%H:%M")).seconds / 3600
+                    duration = (datetime.strptime(clock_out_time, "%Y-%m-%d %H:%M:%S") -
+                                datetime.strptime(clock_in_time, "%Y-%m-%d %H:%M:%S")).seconds / 3600
                     attendance.loc[attendance["clock_in"] == clock_in_time, ["clock_out", "duration"]] = [clock_out_time, duration]
                     save_data_to_google_sheets(attendance, "attendance")
                     st.session_state.clock_out_time = clock_out_time
@@ -175,42 +202,61 @@ if name != "Select Your Name" and passkey:
             if st.session_state.clock_out_time is not None:
                 st.session_state.clock_in_time = None
                 st.session_state.clock_out_time = None
-
-        # Leave Application Section
+        
         st.subheader("Apply for Leave")
         start_date = st.date_input("Start Date")
         end_date = st.date_input("End Date")
-        reason = st.text_area("Reason")
-        
+        reason = st.text_area("Reason")  # Keep this to allow users to enter a reason
+
+        # Leave Application Section
         if st.button("Apply Leave"):
-            new_leave = pd.DataFrame({
-                "id": [len(leaves) + 1],
-                "name": [name],
-                "email": [user["email"]],
-                "registered_id": [user["registered_id"]],
-                "start_date": [start_date],
-                "end_date": [end_date],
-                "reason": [reason]
-            })
-            leaves = pd.concat([leaves, new_leave], ignore_index=True)
-            save_data_to_google_sheets(leaves, "leaves")
-            #send_email(ADMIN_EMAIL, "New Leave Request", f"{name} applied for leave from {start_date} to {end_date}.")
-            send_email(
-               ADMIN_EMAIL, 
-               "New Leave Request", 
-               f"Employee Name: {name}\n"
-               f"Email: {user['email']}\n"
-               f"Start Date: {start_date}\n"
-               f"End Date: {end_date}\n"
-               f"Reason: {reason}\n\n"
-               "Kindly respond to this leave application."
-            )
-            st.success("Leave Applied Successfully! Notification sent to Admin.")
+            # Ensure dates are valid
+            if start_date > end_date:
+                st.error("End date cannot be before start date.")
+            else:
+                # Convert dates to strings
+                start_date_str = start_date.strftime("%Y-%m-%d")
+                end_date_str = end_date.strftime("%Y-%m-%d")
+
+                # Check for overlapping leave requests
+                existing_leaves = leaves[(leaves["name"] == name) & 
+                                 ((leaves["start_date"] <= start_date_str) & (leaves["end_date"] >= start_date_str)) |
+                                 ((leaves["start_date"] <= end_date_str) & (leaves["end_date"] >= end_date_str))]
+        
+                if not existing_leaves.empty:
+                    st.error("You already have a leave request for these dates.")
+                else:
+                    new_leave = pd.DataFrame({
+                        "id": [len(leaves) + 1],
+                        "name": [name],
+                        "email": [user["email"]],
+                        "registered_id": [user["registered_id"]],
+                        "start_date": [start_date_str],
+                        "end_date": [end_date_str],
+                        "reason": [reason]  # Added missing reason
+                    })
+
+                    # Append new leave entry
+                    leaves = pd.concat([leaves, new_leave], ignore_index=True)
+                    save_data_to_google_sheets(leaves, "leaves")  # Ensure this function works properly
+
+                    # Send email notification to Admin
+                    send_email(
+                        ADMIN_EMAIL, 
+                        "New Leave Request", 
+                        f"Employee Name: {name}\n"
+                        f"Email: {user['email']}\n"
+                        f"Start Date: {start_date_str}\n"
+                        f"End Date: {end_date_str}\n"
+                        f"Reason: {reason}\n\n"
+                        "Kindly respond to this leave application."
+                    )
+
+                    st.success("Leave applied successfully! Notification sent to Admin.")
                 
         # Logout Button
-        if st.button("Logout"):
-            st.experimental_rerun()  # This will refresh the page for re-login
-        
+        #if st.button("Logout"):
+            #st.experimental_rerun()  # This will refresh the page for re-login
 else:
     if name == "Select Your Name":
         st.error("Please select a valid name.")
